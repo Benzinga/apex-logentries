@@ -123,10 +123,11 @@ func (h *Handler) handleError(err error) {
 // connectionLoop handles the internal connection that sends the logs to
 // LogEntries.
 func (h *Handler) connectionLoop() {
-	for {
-		var conn net.Conn
-		var err error
+	var conn net.Conn
+	var err error
+	var enc *json.Encoder
 
+	for {
 		dialer := net.Dialer{
 			Timeout:   dialTimeout,
 			KeepAlive: writeTimeout,
@@ -137,13 +138,14 @@ func (h *Handler) connectionLoop() {
 		} else {
 			conn, err = dialer.Dial("tcp", h.Address)
 		}
+
 		if err != nil {
 			h.handleError(err)
+			goto Error
 		}
 
-		enc := json.NewEncoder(conn)
+		enc = json.NewEncoder(conn)
 
-	WriteLoop:
 		for {
 			select {
 			case log := <-h.ch:
@@ -152,19 +154,28 @@ func (h *Handler) connectionLoop() {
 				err := enc.Encode(log)
 				if err != nil {
 					h.handleError(err)
-					break WriteLoop
+					goto Error
 				}
 				break
 
 			case <-h.ctx.Done():
-				err := conn.Close()
-				if err != nil {
-					h.handleError(err)
-				}
-				return
+				goto Done
 			}
 		}
 
+	Error:
+		select {
+		case <-time.After(retryDelay):
+			continue
+		case <-h.ctx.Done():
+			goto Done
+		}
+	}
+
+Done:
+	err = conn.Close()
+	if err != nil {
+		h.handleError(err)
 	}
 }
 
